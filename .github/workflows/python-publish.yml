@@ -1,4 +1,4 @@
-name: S3 Backup and Update Workflows
+name: S3 Backup and Update Workflow
 
 on:
   push:
