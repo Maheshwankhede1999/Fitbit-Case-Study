@@ -1,0 +1,74 @@
+name: S3 Backup and Update Workflows
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-west-2
+        run: |
+          aws configure set aws_access_key_id $AWS_ACCESS_KEY_ID
+          aws configure set aws_secret_access_key $AWS_SECRET_ACCESS_KEY
+          aws configure set default.region $AWS_DEFAULT_REGION
+
+      - name: Install AWS CLI
+        run: |
+          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+          unzip awscliv2.zip
+          sudo ./aws/install --update
+
+      - name: Get current date
+        id: date
+        run: echo "DATE=$(date +'%Y_%m_%d')" >> $GITHUB_ENV
+
+      - name: Set environment variables
+        run: |
+          echo "REPO_NAME=${GITHUB_REPOSITORY#*/}" >> $GITHUB_ENV
+          echo "S3_BUCKET=aws-s3-managed-bucket-by-puri" >> $GITHUB_ENV
+
+      - name: Create S3 backup
+        run: |
+          # Create backup of existing repository folder
+          aws s3 sync s3://${S3_BUCKET}/bitbucket/${REPO_NAME} \
+            s3://${S3_BUCKET}/bitbucket_bkp/${REPO_NAME}_${DATE} \
+            --only-show-errors
+
+      - name: Update S3 with new content
+        run: |
+          # Sync repository contents to S3
+          aws s3 sync . s3://${S3_BUCKET}/bitbucket/${REPO_NAME} \
+            --exclude ".git/*" \
+            --exclude ".github/*" \
+            --delete \
+            --only-show-errors
+
+      - name: Send email notification
+        env:
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+        run: |
+          # Create email content
+          EMAIL_SUBJECT="S3 Backup and Update Complete for -> ${REPO_NAME}"
+          EMAIL_BODY="The S3 backup and update process has been completed successfully.\n\n"
+          EMAIL_BODY+="Repository: ${REPO_NAME}\n"
+          EMAIL_BODY+="Backup Location: s3://${S3_BUCKET}/bitbucket_bkp/${REPO_NAME}_${DATE}\n"
+          EMAIL_BODY+="Updated Location: s3://${S3_BUCKET}/bitbucket/${REPO_NAME}\n"
+          EMAIL_BODY+="Date: $(date)\n"
+          
+          # Send email using AWS SES
+          aws ses send-email \
+            --from "${SENDER_EMAIL}" \
+            --destination "ToAddresses=${RECIPIENT_EMAIL}" \
+            --message "Subject={Data=${EMAIL_SUBJECT},Charset=UTF-8},Body={Text={Data=${EMAIL_BODY},Charset=UTF-8}}"
